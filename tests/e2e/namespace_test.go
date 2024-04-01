@@ -31,6 +31,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/e2e-framework/klient/wait"
+	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
@@ -209,6 +210,7 @@ func TestNamespaceDeletionWhenClusterDoesNotExist(rt *testing.T) {
 						Name: temporalClusterName,
 					},
 					RetentionPeriod: &metav1.Duration{Duration: 24 * time.Hour},
+					AllowDeletion:   true,
 				},
 			}
 			err := c.Client().Resources(namespace).Create(ctx, temporalNamespace)
@@ -231,6 +233,21 @@ func TestNamespaceDeletionWhenClusterDoesNotExist(rt *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to delete namespace: %v", err)
 			}
+			return ctx
+		}).
+		Assess("TemporalNamespace is deleted", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			namespace := GetNamespaceForFeature(ctx)
+			temporalNamespace := GetTemporalNamespaceForFeature(ctx)
+
+			err := wait.For(
+				conditions.New(c.Client().Resources(namespace)).ResourceDeleted(temporalNamespace),
+				wait.WithTimeout(time.Minute*2),
+			)
+
+			if err != nil {
+				t.Fatal(err)
+			}
+
 			return ctx
 		}).
 		Feature()
@@ -262,6 +279,7 @@ func TestNamespaceDeletionWhenClusterDeleted(rt *testing.T) {
 						Name: cluster.GetName(),
 					},
 					RetentionPeriod: &metav1.Duration{Duration: 24 * time.Hour},
+					AllowDeletion:   true,
 				},
 			}
 			err := c.Client().Resources(namespace).Create(ctx, temporalNamespace)
@@ -282,6 +300,83 @@ func TestNamespaceDeletionWhenClusterDeleted(rt *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to delete: %v", err)
 			}
+			return ctx
+		}).
+		Assess("TemporalNamespace is deleted", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			namespace := GetNamespaceForFeature(ctx)
+			temporalNamespace := GetTemporalNamespaceForFeature(ctx)
+
+			err := wait.For(
+				conditions.New(c.Client().Resources(namespace)).ResourceDeleted(temporalNamespace),
+				wait.WithTimeout(time.Minute*2),
+			)
+
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return ctx
+		}).
+		Feature()
+
+	testenv.Test(rt, feature)
+}
+
+func TestNamespaceDeletionWhenClusterExists(rt *testing.T) {
+	feature := features.New("namespace can be deleted when a temporal cluster exists").
+		Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			// create TemporalCluster
+			namespace := GetNamespaceForFeature(ctx)
+
+			cluster, err := deployAndWaitForTemporalWithPostgres(ctx, c, namespace, "1.19.1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return SetTemporalClusterForFeature(ctx, cluster)
+		}).
+		Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			// create TemporalNamespace
+			namespace := GetNamespaceForFeature(ctx)
+			cluster := GetTemporalClusterForFeature(ctx)
+
+			temporalNamespace := &v1beta1.TemporalNamespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: namespace},
+				Spec: v1beta1.TemporalNamespaceSpec{
+					ClusterRef: v1beta1.TemporalClusterReference{
+						Name: cluster.GetName(),
+					},
+					RetentionPeriod: &metav1.Duration{Duration: 24 * time.Hour},
+					AllowDeletion:   true,
+				},
+			}
+			err := c.Client().Resources(namespace).Create(ctx, temporalNamespace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return SetTemporalNamespaceForFeature(ctx, temporalNamespace)
+		}).
+		Assess("TemporalCluster is ready", AssertTemporalClusterReady()).
+		Assess("TemporalNamespace is ready", AssertTemporalNamespaceReadyWithTimeout(15*time.Minute)).
+		Assess("TemporalNamespace can be deleted", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			err := c.Client().Resources(GetNamespaceForFeature(ctx)).Delete(ctx, GetTemporalNamespaceForFeature(ctx))
+			if err != nil {
+				t.Fatalf("failed to delete: %v", err)
+			}
+			return ctx
+		}).
+		Assess("TemporalNamespace is deleted", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			namespace := GetNamespaceForFeature(ctx)
+			temporalNamespace := GetTemporalNamespaceForFeature(ctx)
+
+			err := wait.For(
+				conditions.New(c.Client().Resources(namespace)).ResourceDeleted(temporalNamespace),
+				wait.WithTimeout(time.Minute*2),
+			)
+
+			if err != nil {
+				t.Fatal(err)
+			}
+
 			return ctx
 		}).
 		Feature()

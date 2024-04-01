@@ -247,6 +247,10 @@ func AssertCanCreateTemporalNamespace(name string) features.Func {
 }
 
 func AssertTemporalNamespaceReady() features.Func {
+	return AssertTemporalNamespaceReadyWithTimeout(time.Minute * 10)
+}
+
+func AssertTemporalNamespaceReadyWithTimeout(timeout time.Duration) features.Func {
 	return func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 		temporalNamespace := GetTemporalNamespaceForFeature(ctx)
 
@@ -259,7 +263,7 @@ func AssertTemporalNamespaceReady() features.Func {
 			return false
 		})
 
-		err := wait.For(cond, wait.WithTimeout(time.Minute*10))
+		err := wait.For(cond, wait.WithTimeout(timeout))
 		if err != nil {
 			t.Fatal(err)
 		}

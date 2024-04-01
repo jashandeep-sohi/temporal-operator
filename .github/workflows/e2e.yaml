@@ -57,12 +57,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha
           outputs: type=docker,dest=${{ env.WORKER_PROCESS_IMAGE_PATH }}
-      # e2e-framework uses kind v0.12.0 as default value
-      - name: Install kind
-        uses: helm/kind-action@v1.9.0
-        with:
-          version: ${{ env.KIND_VERSION }}
-          install_only: true
+
       - name: Free some disk space
         run: sudo rm -rf /usr/share/dotnet && sudo rm -rf /opt/ghc && sudo rm -rf "/usr/local/share/boost"
       - name: Run e2e test suite
