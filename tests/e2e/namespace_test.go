@@ -69,7 +69,7 @@ func TestNamespaceCreation(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			return ctx
+			return SetTemporalNamespaceForFeature(ctx, temporalNamespace)
 		}).
 		Assess("Namespace exists", func(ctx context.Context, tt *testing.T, cfg *envconf.Config) context.Context {
 			connectAddr, closePortForward, err := forwardPortToTemporalFrontend(ctx, cfg, t, cluster)
@@ -142,6 +142,7 @@ func TestNamespaceCreation(t *testing.T) {
 
 			return ctx
 		}).
+		Assess("TemporalNamespace is deleted", AssertTemporalNamespaceIsDeleted()).
 		// Assess("Namespace delete in temporal", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 		// 	connectAddr, closePortForward, err := forwardPortToTemporalFrontend(ctx, cfg, t, cluster)
 		// 	if err != nil {
@@ -209,6 +210,7 @@ func TestNamespaceDeletionWhenClusterDoesNotExist(rt *testing.T) {
 						Name: temporalClusterName,
 					},
 					RetentionPeriod: &metav1.Duration{Duration: 24 * time.Hour},
+					AllowDeletion:   true,
 				},
 			}
 			err := c.Client().Resources(namespace).Create(ctx, temporalNamespace)
@@ -226,13 +228,8 @@ func TestNamespaceDeletionWhenClusterDoesNotExist(rt *testing.T) {
 
 			return ctx
 		}).
-		Assess("TemporalNamespace can be deleted", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			err := c.Client().Resources(GetNamespaceForFeature(ctx)).Delete(ctx, GetTemporalNamespaceForFeature(ctx))
-			if err != nil {
-				t.Fatalf("failed to delete namespace: %v", err)
-			}
-			return ctx
-		}).
+		Assess("TemporalNamespace can be deleted", AssertTemporalNamespaceCanDelete()).
+		Assess("TemporalNamespace is deleted", AssertTemporalNamespaceIsDeleted()).
 		Feature()
 
 	testenv.Test(rt, feature)
@@ -262,6 +259,7 @@ func TestNamespaceDeletionWhenClusterDeleted(rt *testing.T) {
 						Name: cluster.GetName(),
 					},
 					RetentionPeriod: &metav1.Duration{Duration: 24 * time.Hour},
+					AllowDeletion:   true,
 				},
 			}
 			err := c.Client().Resources(namespace).Create(ctx, temporalNamespace)
@@ -270,20 +268,56 @@ func TestNamespaceDeletionWhenClusterDeleted(rt *testing.T) {
 			}
 			return SetTemporalNamespaceForFeature(ctx, temporalNamespace)
 		}).
-		Assess("TemporalCluster can be deleted", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			err := c.Client().Resources(GetNamespaceForFeature(ctx)).Delete(ctx, GetTemporalClusterForFeature(ctx))
+		Assess("TemporalCluster is ready", AssertTemporalClusterReady()).
+		Assess("TemporalCluster can be deleted", AssertTemporalClusterCanDelete()).
+		Assess("TemporalCluster is deleted", AssertTemporalClusterIsDeleted()).
+		Assess("TemporalNamespace can be deleted", AssertTemporalNamespaceCanDelete()).
+		Assess("TemporalNamespace is deleted", AssertTemporalNamespaceIsDeleted()).
+		Feature()
+
+	testenv.Test(rt, feature)
+}
+
+func TestNamespaceDeletionWhenClusterExists(rt *testing.T) {
+	feature := features.New("namespace can be deleted when a temporal cluster exists").
+		Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			// create TemporalCluster
+			namespace := GetNamespaceForFeature(ctx)
+
+			cluster, err := deployAndWaitForTemporalWithPostgres(ctx, c, namespace, "1.19.1")
 			if err != nil {
-				t.Fatalf("failed to delete: %v", err)
+				t.Fatal(err)
 			}
-			return ctx
+			return SetTemporalClusterForFeature(ctx, cluster)
 		}).
-		Assess("TemporalNamespace can be deleted", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			err := c.Client().Resources(GetNamespaceForFeature(ctx)).Delete(ctx, GetTemporalNamespaceForFeature(ctx))
+		Setup(AssertTemporalClusterReady()).
+		Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			// create TemporalNamespace
+			namespace := GetNamespaceForFeature(ctx)
+			cluster := GetTemporalClusterForFeature(ctx)
+
+			temporalNamespace := &v1beta1.TemporalNamespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: namespace},
+				Spec: v1beta1.TemporalNamespaceSpec{
+					ClusterRef: v1beta1.TemporalClusterReference{
+						Name: cluster.GetName(),
+					},
+					RetentionPeriod: &metav1.Duration{Duration: 24 * time.Hour},
+					AllowDeletion:   true,
+				},
+			}
+			err := c.Client().Resources(namespace).Create(ctx, temporalNamespace)
 			if err != nil {
-				t.Fatalf("failed to delete: %v", err)
+				t.Fatal(err)
 			}
-			return ctx
+			return SetTemporalNamespaceForFeature(ctx, temporalNamespace)
 		}).
+		Assess("TemporalCluster is ready", AssertTemporalClusterReady()).
+		Assess("TemporalNamespace is ready", AssertTemporalNamespaceReady()).
+		Assess("TemporalNamespace can be deleted", AssertTemporalNamespaceCanDelete()).
+		Assess("TemporalNamespace is deleted", AssertTemporalNamespaceIsDeleted()).
+		Assess("TemporalCluster can be deleted", AssertTemporalClusterCanDelete()).
+		Assess("TemporalCluster is deleted", AssertTemporalClusterIsDeleted()).
 		Feature()
 
 	testenv.Test(rt, feature)

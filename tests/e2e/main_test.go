@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/discovery"
 	"k8s.io/klog/v2/textlogger"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/e2e-framework/klient/decoder"
@@ -40,6 +41,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/envfuncs"
 	"sigs.k8s.io/e2e-framework/pkg/features"
+	"sigs.k8s.io/e2e-framework/support"
 	"sigs.k8s.io/e2e-framework/support/kind"
 	"sigs.k8s.io/e2e-framework/third_party/helm"
 )
@@ -62,6 +64,47 @@ func TestMain(m *testing.M) {
 	os.Exit(testMainRun(m))
 }
 
+type FixedKindProvider struct {
+	*kind.Cluster
+	image string
+}
+
+func (k *FixedKindProvider) SetDefaults() support.E2EClusterProvider {
+	k.Cluster.SetDefaults()
+	return k
+}
+
+func (k *FixedKindProvider) WithName(name string) support.E2EClusterProvider {
+	k.Cluster.WithName(name)
+	return k
+}
+
+func (k *FixedKindProvider) WithVersion(version string) support.E2EClusterProvider {
+	k.Cluster.WithVersion(version)
+	return k
+}
+
+func (k *FixedKindProvider) WithPath(path string) support.E2EClusterProvider {
+	k.Cluster.WithPath(path)
+	return k
+}
+
+func (k *FixedKindProvider) WithOpts(opts ...support.ClusterOpts) support.E2EClusterProvider {
+	k.Cluster.WithOpts(opts...)
+	return k
+}
+
+// Ensure interface is implemented.
+var _ support.E2EClusterProvider = &FixedKindProvider{}
+
+func (k *FixedKindProvider) Create(ctx context.Context, args ...string) (string, error) {
+	if k.image != "" {
+		args = append(args, "--image", k.image)
+	}
+	fmt.Printf("args: %v\n", args)
+	return k.Cluster.Create(ctx, args...)
+}
+
 func testMainRun(m *testing.M) int {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -71,10 +114,9 @@ func testMainRun(m *testing.M) int {
 	clusterLogsOutPath := path.Join(wd, "..", "..", "out", "tests", "e2e")
 
 	kubernetesVersion := os.Getenv("KUBERNETES_VERSION")
-	if kubernetesVersion == "" {
-		kubernetesVersion = "v1.26.0"
-	}
-	kindImage := fmt.Sprintf("kindest/node:%s", kubernetesVersion)
+
+	// if not set default to Kind's default image
+	kindImage := os.Getenv("KIND_IMAGE")
 
 	operatorImagePath := os.Getenv("OPERATOR_IMAGE_PATH")
 	exampleWorkerProcessImagePath := os.Getenv("WORKER_PROCESS_IMAGE_PATH")
@@ -92,7 +134,10 @@ func testMainRun(m *testing.M) int {
 		return err
 	}
 
-	kindCluster := kind.NewProvider().WithOpts(kind.WithImage(kindImage))
+	kindCluster := &FixedKindProvider{
+		Cluster: &kind.Cluster{},
+		image:   kindImage,
+	}
 
 	testenv = env.
 		NewWithConfig(cfg).
@@ -103,6 +148,26 @@ func testMainRun(m *testing.M) int {
 			envfuncs.LoadImageArchiveToCluster(kindClusterName, exampleWorkerProcessImagePath),
 			envfuncs.SetupCRDs("../../out/release/artifacts", "*.crds.yaml"),
 		).
+		// Make sure the cluster version is what we expect
+		Setup(func(ctx context.Context, c *envconf.Config) (context.Context, error) {
+			dc, err := discovery.NewDiscoveryClientForConfig(c.Client().RESTConfig())
+
+			if err != nil {
+				return ctx, err
+			}
+
+			sv, err := dc.ServerVersion()
+
+			if err != nil {
+				return ctx, err
+			}
+
+			if sv.GitVersion != kubernetesVersion {
+				return ctx, fmt.Errorf("API server version %v does not match expected value %v", sv.GitVersion, kubernetesVersion)
+			}
+
+			return ctx, nil
+		}).
 		// Add the operators crds to the client scheme.
 		Setup(func(ctx context.Context, c *envconf.Config) (context.Context, error) {
 			fmt.Printf("KUBECONFIG=%s\n", c.KubeconfigFile())
@@ -220,13 +285,28 @@ func createNSForTest(ctx context.Context, cfg *envconf.Config, t *testing.T, f f
 
 // deleteNSForTest looks up the namespace corresponding to the given test and deletes it.
 func deleteNSForTest(ctx context.Context, cfg *envconf.Config, t *testing.T, f features.Feature) (context.Context, error) {
-	ns := GetNamespaceForFeature(ctx)
-
-	t.Logf("Deleting namespace %s for feature \"%s\" in test %s", ns, f.Name(), t.Name())
-
-	return ctx, cfg.Client().Resources().Delete(ctx, &corev1.Namespace{
+	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: ns,
+			Name: GetNamespaceForFeature(ctx),
 		},
-	})
+	}
+
+	t.Logf("Deleting namespace %s for feature \"%s\" in test %s", ns.GetName(), f.Name(), t.Name())
+
+	err := cfg.Client().Resources().Delete(ctx, ns)
+
+	if err != nil {
+		return ctx, fmt.Errorf("failed to delete namespace %v: %v", ns.GetName(), err)
+	}
+
+	err = wait.For(
+		conditions.New(cfg.Client().Resources()).ResourceDeleted(ns),
+		wait.WithTimeout(time.Minute*2),
+	)
+
+	if err != nil {
+		return ctx, fmt.Errorf("failed to wait for namespace %v to delete: %v", ns.GetName(), err)
+	}
+
+	return ctx, nil
 }

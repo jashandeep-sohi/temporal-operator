@@ -28,6 +28,7 @@ import (
 	"github.com/alexandrevilain/temporal-operator/tests/e2e/temporal/teststarter"
 	"github.com/alexandrevilain/temporal-operator/tests/e2e/temporal/testworker"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
@@ -250,16 +251,13 @@ func AssertTemporalNamespaceReady() features.Func {
 	return func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 		temporalNamespace := GetTemporalNamespaceForFeature(ctx)
 
-		cond := conditions.New(cfg.Client().Resources()).ResourceMatch(temporalNamespace, func(object k8s.Object) bool {
-			for _, condition := range object.(*v1beta1.TemporalNamespace).Status.Conditions {
-				if condition.Type == v1beta1.ReadyCondition && condition.Status == metav1.ConditionTrue {
-					return true
-				}
-			}
-			return false
-		})
+		err := wait.For(
+			conditions.New(cfg.Client().Resources()).ResourceMatch(temporalNamespace, func(object k8s.Object) bool {
+				return meta.IsStatusConditionPresentAndEqual(object.(*v1beta1.TemporalNamespace).Status.Conditions, v1beta1.ReadyCondition, metav1.ConditionTrue)
+			}),
+			wait.WithTimeout(time.Minute*15),
+		)
 
-		err := wait.For(cond, wait.WithTimeout(time.Minute*10))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -268,6 +266,62 @@ func AssertTemporalNamespaceReady() features.Func {
 		// "Note that registering a Namespace takes up to 15 seconds to complete".
 		time.Sleep(15 * time.Second)
 
+		return ctx
+	}
+}
+
+func AssertTemporalNamespaceIsDeleted() features.Func {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		namespace := GetNamespaceForFeature(ctx)
+		temporalNamespace := GetTemporalNamespaceForFeature(ctx)
+
+		err := wait.For(
+			conditions.New(c.Client().Resources(namespace)).ResourceDeleted(temporalNamespace),
+			wait.WithTimeout(time.Minute*2),
+		)
+
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return ctx
+	}
+}
+
+func AssertTemporalClusterIsDeleted() features.Func {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		namespace := GetNamespaceForFeature(ctx)
+		temporalCluster := GetTemporalClusterForFeature(ctx)
+
+		err := wait.For(
+			conditions.New(c.Client().Resources(namespace)).ResourceDeleted(temporalCluster),
+			wait.WithTimeout(time.Minute*2),
+		)
+
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return ctx
+	}
+}
+
+func AssertTemporalClusterCanDelete() features.Func {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		err := c.Client().Resources(GetNamespaceForFeature(ctx)).Delete(ctx, GetTemporalClusterForFeature(ctx))
+		if err != nil {
+			t.Fatalf("failed to delete: %v", err)
+		}
+		return ctx
+	}
+}
+
+func AssertTemporalNamespaceCanDelete() features.Func {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		err := c.Client().Resources(GetNamespaceForFeature(ctx)).Delete(ctx, GetTemporalNamespaceForFeature(ctx))
+		if err != nil {
+			t.Fatalf("failed to delete: %v", err)
+		}
 		return ctx
 	}
 }
